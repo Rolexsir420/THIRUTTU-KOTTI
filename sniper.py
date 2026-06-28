@@ -35,14 +35,7 @@ SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGETS = [
     "tamilfriendship",
-    "tamil_friends",
     "tamilgroup",
-    "tamilvip",
-    "tamilboys",
-    "tamilgirls",
-    "tamilonly",
-    "tamilzone",
-    "tamilclub",
     "tamil_b",
 ]
 
