@@ -35,17 +35,8 @@ API_HASH       = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGETS = [
-    "tamil_chat",
     "tamilfriendship",
-    "tamil_friends",
     "tamilgroup",
-    "tamilchat",
-    "tamilvip",
-    "tamilboys",
-    "tamilgirls",
-    "tamilonly",
-    "tamilzone",
-    "tamilclub",
     "tamil_b",
 ]
 
@@ -109,13 +100,19 @@ async def try_claim(client: Client, username: str) -> bool:
     log.info(f"⚡ BURST CLAIM x{CLAIM_BURST} for @{username}!")
     channel_id = await get_next_channel()
 
+    # Cache channel peer once before burst to avoid repeated GetFullChannel calls
+    cached_chat_id = None
+    if channel_id:
+        try:
+            chat = await client.get_chat(channel_id)
+            cached_chat_id = chat.id
+        except Exception as e:
+            log.warning(f"Could not cache channel {channel_id}: {e}")
+
     async def single_attempt(n: int):
         try:
-            if channel_id:
-                await client.set_chat_username(
-                    (await client.get_chat(channel_id)).id,
-                    username
-                )
+            if cached_chat_id:
+                await client.set_chat_username(cached_chat_id, username)
                 log.info(f"✅ @{username} → channel {channel_id} (attempt #{n})")
                 return channel_id
             else:
