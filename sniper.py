@@ -36,7 +36,14 @@ SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGETS = [
     "tamilfriendship",
+    "tamil_friends",
     "tamilgroup",
+    "tamilvip",
+    "tamilboys",
+    "tamilgirls",
+    "tamilonly",
+    "tamilzone",
+    "tamilclub",
     "tamil_b",
 ]
 
@@ -50,7 +57,7 @@ CHANNEL_POOL = [
 CHANNEL_TITLE  = "Tamil Chat"  # used only if CHANNEL_POOL is empty
 CHECK_INTERVAL = 0.2           # normal polling interval (seconds)
 FAST_INTERVAL  = 0.1           # adaptive interval once username goes free
-CLAIM_BURST    = 5             # simultaneous claim attempts
+CLAIM_BURST    = 2             # simultaneous claim attempts
 NOTIFY_SELF    = True
 STAGGER_DELAY  = 0.2           # startup stagger between watchers
 # ───────────────────────────────────────────────────────────────────────────────
@@ -64,24 +71,26 @@ _pool_lock  = asyncio.Lock()
 async def is_available(client: Client, username: str) -> bool:
     t = time.time()
     try:
-        await client.resolve_peer(username)
+        # Use contacts.ResolveUsername directly — bypasses local peer cache
+        result = await client.invoke(
+            raw.functions.contacts.ResolveUsername(username=username)
+        )
         ms = (time.time() - t) * 1000
         log.debug(f"@{username} check took {ms:.0f}ms → taken")
         return False
-    except PeerIdInvalid:
-        ms = (time.time() - t) * 1000
-        log.debug(f"@{username} check took {ms:.0f}ms → FREE")
-        return True
     except FloodWait:
         raise
     except Exception as e:
+        ms = (time.time() - t) * 1000
         msg = str(e).lower()
         if any(k in msg for k in (
             "username_not_occupied",
+            "username invalid",
             "no match",
             "not found",
-            "username invalid",
+            "not occupied",
         )):
+            log.debug(f"@{username} check took {ms:.0f}ms → FREE")
             return True
         return False
 
@@ -130,9 +139,18 @@ async def try_claim(client: Client, username: str) -> bool:
         except (UsernameInvalid, UsernameNotModified) as e:
             log.warning(f"  #{n}: {e}")
             return None
+        except FloodWait as e:
+            log.warning(f"  #{n} UpdateUsername FloodWait {e.value}s — waiting ...")
+            await asyncio.sleep(e.value)
+            return None
         except Exception as e:
             if "CHANNELS_ADMIN_PUBLIC_TOO_MUCH" in str(e):
                 log.error("❌ Too many public channels! Add more to CHANNEL_POOL.")
+            elif "FLOOD_WAIT" in str(e):
+                import re
+                wait = int(re.search(r"\d+", str(e)).group() or 10)
+                log.warning(f"  #{n} FloodWait {wait}s")
+                await asyncio.sleep(wait)
             else:
                 log.warning(f"  #{n} error: {e}")
             return None
