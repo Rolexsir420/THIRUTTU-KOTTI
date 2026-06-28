@@ -8,15 +8,17 @@ Telegram Username Sniper Userbot ⚡
 - Response time logging for tuning
 - Channel pool: assigns each claimed username to next available channel
 - Skips done targets, continues watching rest
+- String session support via environment variables
 """
 
 import asyncio
 import time
 import logging
+import os
 from datetime import datetime
 from pyrogram import Client
 from pyrogram.errors import (
-    FloodWait, UsernameOccupied, ChannelsAdminPublicTooMany,
+    FloodWait, UsernameOccupied,
     UsernameInvalid, UsernameNotModified, PeerIdInvalid
 )
 
@@ -27,10 +29,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("sniper")
 
-# ─── CONFIG ────────────────────────────────────────────────────────────────────
-API_ID       = 34953656
-API_HASH     = "baf60dc4c4786dc0357d67d582e97ef6"
-SESSION_NAME = "sniper_session"
+# ─── CONFIG (all from Railway environment variables) ───────────────────────────
+API_ID         = int(os.environ.get("API_ID", 0))
+API_HASH       = os.environ.get("API_HASH", "")
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGETS = [
     "tamil_chat",
@@ -69,8 +71,8 @@ _pool_lock  = asyncio.Lock()
 
 
 async def is_available(client: Client, username: str) -> bool:
+    t = time.time()
     try:
-        t = time.time()
         await client.resolve_peer(username)
         ms = (time.time() - t) * 1000
         log.debug(f"@{username} check took {ms:.0f}ms → taken")
@@ -125,9 +127,10 @@ async def try_claim(client: Client, username: str) -> bool:
         except UsernameOccupied:
             log.warning(f"  #{n}: race lost — taken by someone else")
             return None
-        except ChannelsAdminPublicTooMany:
-            log.error("❌ Too many public channels! Add more to CHANNEL_POOL.")
-            return None
+        except Exception as e:
+            if "ChannelsAdminPublicTooMany" in str(e) or "TOO_MUCH_JOINED_CHATS" in str(e):
+                log.error("❌ Too many public channels! Add more to CHANNEL_POOL.")
+                return None
         except (UsernameInvalid, UsernameNotModified) as e:
             log.warning(f"  #{n}: {e}")
             return None
@@ -173,7 +176,7 @@ async def pre_resolve(client: Client):
             await asyncio.sleep(e.value)
         except Exception as e:
             log.warning(f"   @{t} pre-resolve error: {e}")
-        await asyncio.sleep(0.1)  # small gap between each to avoid flood
+        await asyncio.sleep(0.1)
     log.info("✅ Pre-resolve done. Starting watchers ...")
 
 
@@ -260,13 +263,29 @@ async def watch(client: Client, username: str, stagger_index: int):
 
 
 async def main():
-    async with Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH) as client:
+    # Use string session if available, otherwise fall back to session file
+    if SESSION_STRING:
+        client = Client(
+            name="sniper",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=SESSION_STRING
+        )
+        log.info("🔑 Using string session from environment")
+    else:
+        client = Client(
+            name="sniper_session",
+            api_id=API_ID,
+            api_hash=API_HASH
+        )
+        log.info("🔑 Using local session file")
+
+    async with client:
         me = await client.get_me()
         log.info(f"🤖 Logged in as {me.first_name} (@{me.username or 'no username'})")
         log.info(f"⚡ Targets: {len(TARGETS)} | Pool: {len(CHANNEL_POOL)} channels")
         log.info(f"   Interval: {CHECK_INTERVAL}s → {FAST_INTERVAL}s (adaptive) | Burst: {CLAIM_BURST}x + retry")
 
-        # Warm up peer cache before watchers start
         await pre_resolve(client)
 
         await asyncio.gather(*[
