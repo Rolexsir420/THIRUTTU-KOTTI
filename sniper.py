@@ -35,8 +35,17 @@ API_HASH       = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGETS = [
+    "tamil_chat",
+    "tamilfriendship",
+    "tamil_friends",
     "tamilgroup",
     "tamilchat",
+    "tamilvip",
+    "tamilboys",
+    "tamilgirls",
+    "tamilonly",
+    "tamilzone",
+    "tamilclub",
     "tamil_b",
 ]
 
@@ -103,16 +112,10 @@ async def try_claim(client: Client, username: str) -> bool:
     async def single_attempt(n: int):
         try:
             if channel_id:
-                try:
-                    await client.set_chat_username(channel_id, username)
-                except Exception:
-                    from pyrogram import raw
-                    await client.invoke(
-                        raw.functions.channels.UpdateUsername(
-                            channel=await client.resolve_peer(channel_id),
-                            username=username
-                        )
-                    )
+                await client.set_chat_username(
+                    (await client.get_chat(channel_id)).id,
+                    username
+                )
                 log.info(f"✅ @{username} → channel {channel_id} (attempt #{n})")
                 return channel_id
             else:
@@ -281,6 +284,15 @@ async def main():
 
     async with client:
         me = await client.get_me()
+
+        # Cache all pool channels by joining/getting them
+        log.info("📌 Caching pool channels ...")
+        for cid in CHANNEL_POOL:
+            try:
+                chat = await client.get_chat(cid)
+                log.info(f"   Channel cached: {chat.title} ({cid})")
+            except Exception as e:
+                log.warning(f"   Could not cache channel {cid}: {e}")
         log.info(f"🤖 Logged in as {me.first_name} (@{me.username or 'no username'})")
         log.info(f"⚡ Targets: {len(TARGETS)} | Pool: {len(CHANNEL_POOL)} channels")
         log.info(f"   Interval: {CHECK_INTERVAL}s → {FAST_INTERVAL}s (adaptive) | Burst: {CLAIM_BURST}x + retry")
