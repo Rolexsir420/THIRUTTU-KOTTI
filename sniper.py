@@ -28,8 +28,8 @@ logging.basicConfig(
 log = logging.getLogger("sniper")
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
-API_ID       = 0
-API_HASH     = ""
+API_ID       = 34953656
+API_HASH     = "baf60dc4c4786dc0357d67d582e97ef6"
 SESSION_NAME = "sniper_session"
 
 TARGETS = [
