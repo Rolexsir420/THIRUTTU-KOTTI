@@ -16,7 +16,7 @@ import time
 import logging
 import os
 from datetime import datetime
-from pyrogram import Client
+from pyrogram import Client, raw
 from pyrogram.errors import (
     FloodWait, UsernameOccupied,
     UsernameInvalid, UsernameNotModified, PeerIdInvalid
@@ -35,17 +35,8 @@ API_HASH       = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGETS = [
-    "tamil_chat",
-    "tamilfriendship",
-    "tamil_friends",
     "tamilgroup",
     "tamilchat",
-    "tamilvip",
-    "tamilboys",
-    "tamilgirls",
-    "tamilonly",
-    "tamilzone",
-    "tamilclub",
     "tamil_b",
 ]
 
@@ -112,7 +103,16 @@ async def try_claim(client: Client, username: str) -> bool:
     async def single_attempt(n: int):
         try:
             if channel_id:
-                await client.set_chat_username(channel_id, username)
+                try:
+                    await client.set_chat_username(channel_id, username)
+                except Exception:
+                    from pyrogram import raw
+                    await client.invoke(
+                        raw.functions.channels.UpdateUsername(
+                            channel=await client.resolve_peer(channel_id),
+                            username=username
+                        )
+                    )
                 log.info(f"✅ @{username} → channel {channel_id} (attempt #{n})")
                 return channel_id
             else:
@@ -127,15 +127,14 @@ async def try_claim(client: Client, username: str) -> bool:
         except UsernameOccupied:
             log.warning(f"  #{n}: race lost — taken by someone else")
             return None
-        except Exception as e:
-            if "ChannelsAdminPublicTooMany" in str(e) or "TOO_MUCH_JOINED_CHATS" in str(e):
-                log.error("❌ Too many public channels! Add more to CHANNEL_POOL.")
-                return None
         except (UsernameInvalid, UsernameNotModified) as e:
             log.warning(f"  #{n}: {e}")
             return None
         except Exception as e:
-            log.warning(f"  #{n} error: {e}")
+            if "CHANNELS_ADMIN_PUBLIC_TOO_MUCH" in str(e):
+                log.error("❌ Too many public channels! Add more to CHANNEL_POOL.")
+            else:
+                log.warning(f"  #{n} error: {e}")
             return None
 
     # First burst
