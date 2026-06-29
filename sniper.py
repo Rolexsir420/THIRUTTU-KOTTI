@@ -21,22 +21,21 @@ API_ID         = int(os.environ.get("API_ID", 0))
 API_HASH       = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
-# Map each target username → your channel ID
 TARGET_CHANNEL_MAP = {
-    "tamil_b":        -1004469497392,
-    # "tamilgroup":   -100XXXXXXXXXX,  ← add more here
+    "tamilasia": -1003921818911,
+    "tamil2050": -1004483704268,
 }
 
-CHECK_INTERVAL = 0.1    # normal polling
-FAST_INTERVAL  = 0.02   # when username detected free
+CHECK_INTERVAL = 0.2    # normal polling (seconds)
+FAST_INTERVAL  = 0.05   # once username detected free
 NOTIFY_SELF    = True
-STAGGER_DELAY  = 0.1
+STAGGER_DELAY  = 0.15
 # ─────────────────────────────────────────────────────────────────────────────
 
-_claim_lock = asyncio.Lock()
-_done       = set()
+_claim_lock  = asyncio.Lock()
+_done        = set()
 
-# {channel_id: chat.id} — cached at startup
+# channel_id → chat.id, cached at startup
 _channel_cache: dict[int, int] = {}
 
 
@@ -72,110 +71,154 @@ async def cache_channels(client: Client):
             log.error(f"   ❌ Failed to cache {cid}: {e}")
 
 
-async def watch(client: Client, username: str, index: int):
-    username = username.lstrip("@").lower()
-
+async def try_claim(client: Client, username: str) -> bool:
     channel_id = TARGET_CHANNEL_MAP.get(username)
-    if not channel_id or channel_id not in _channel_cache:
-        log.error(f"❌ No valid channel for @{username} — skipping!")
-        return
+
+    if not channel_id:
+        log.error(f"❌ No channel mapped for @{username}")
+        return False
+
+    if channel_id not in _channel_cache:
+        log.error(f"❌ Channel {channel_id} not cached — skipping!")
+        return False
 
     cached_id = _channel_cache[channel_id]
+    t = time.time()
+
+    try:
+        log.info(f"⚡ Claiming @{username} → channel {channel_id} ...")
+        await client.set_chat_username(cached_id, username)
+        ms = (time.time() - t) * 1000
+        log.info(f"✅ @{username} CLAIMED in {ms:.0f}ms!")
+
+        if NOTIFY_SELF:
+            try:
+                await client.send_message(
+                    "me",
+                    f"🎯 **Claimed @{username}!**\n"
+                    f"🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                    f"📢 Channel: `{channel_id}`"
+                )
+            except Exception:
+                pass
+        return True
+
+    except UsernameOccupied:
+        ms = (time.time() - t) * 1000
+        log.warning(f"❌ @{username} race lost ({ms:.0f}ms) — taken by someone else")
+        return False
+
+    except FloodWait as e:
+        log.warning(f"⏳ FloodWait {e.value}s on @{username} claim")
+        await asyncio.sleep(e.value)
+        return False
+
+    except (UsernameInvalid, UsernameNotModified) as e:
+        log.warning(f"❌ @{username}: {e}")
+        return False
+
+    except Exception as e:
+        if "CHANNELS_ADMIN_PUBLIC_TOO_MUCH" in str(e):
+            log.error("❌ Too many public channels on this account!")
+        else:
+            log.warning(f"❌ @{username} unexpected error: {e}")
+        return False
+
+
+async def watch(client: Client, username: str, index: int):
+    username = username.lstrip("@").lower()
 
     if index > 0:
         await asyncio.sleep(index * STAGGER_DELAY)
 
-    log.info(f"👁  Watching @{username} ...")
+    # ── STARTUP CHECK ────────────────────────────────────────────────────────
+    log.info(f"🔍 @{username} — startup check ...")
+    try:
+        if await is_available(client, username):
+            log.info(f"🟢 @{username} FREE on startup!")
+            async with _claim_lock:
+                success = await try_claim(client, username)
+            _done.add(username)
+            log.info(f"  @{username} {'secured 🏆' if success else 'lost'}.")
+            return
+    except FloodWait as e:
+        log.warning(f"FloodWait {e.value}s on startup @{username}")
+        await asyncio.sleep(e.value)
+    except Exception as e:
+        log.warning(f"Startup error @{username}: {e}")
+
+    # ── HOT LOOP ─────────────────────────────────────────────────────────────
+    log.info(f"👁  @{username} — watching ...")
     check_no = 0
     t_start  = time.time()
+    interval = CHECK_INTERVAL
+    errors   = 0
 
     while True:
         if username in _done:
             log.info(f"  @{username} done. Exiting.")
             return
 
+        if _claim_lock.locked():
+            await asyncio.sleep(0.05)
+            continue
+
         try:
             check_no += 1
             available = await is_available(client, username)
+            errors    = 0
 
             if check_no % 500 == 0:
                 elapsed = time.time() - t_start
                 log.info(f"  @{username} — {check_no} checks ({check_no/elapsed:.1f}/s)")
 
             if available:
-                log.info(f"🟢 @{username} FREE! Attempting claim ...")
-
+                interval = FAST_INTERVAL
+                log.info(f"🟢 @{username} FREE! Firing claim ...")
                 async with _claim_lock:
                     if username in _done:
                         return
+                    success = await try_claim(client, username)
 
-                    for attempt in range(5):
-                        t = time.time()
-                        try:
-                            await client.set_chat_username(cached_id, username)
-                            ms = (time.time() - t) * 1000
-                            log.info(f"✅ @{username} CLAIMED in {ms:.0f}ms!")
-                            _done.add(username)
+                if success:
+                    _done.add(username)
+                    log.info(f"  @{username} secured 🏆")
+                    return
 
-                            if NOTIFY_SELF:
-                                try:
-                                    await client.send_message(
-                                        "me",
-                                        f"🎯 **Claimed @{username}!**\n"
-                                        f"🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                                        f"📢 Channel: `{channel_id}`"
-                                    )
-                                except Exception:
-                                    pass
-                            return
-
-                        except UsernameOccupied:
-                            ms = (time.time() - t) * 1000
-                            log.warning(f"  Attempt {attempt+1}: USERNAME_OCCUPIED ({ms:.0f}ms) retrying in 1s...")
-                            await asyncio.sleep(1)
-
-                        except FloodWait as e:
-                            log.warning(f"  FloodWait {e.value}s on claim ...")
-                            await asyncio.sleep(e.value)
-
-                        except (UsernameInvalid, UsernameNotModified) as e:
-                            log.warning(f"  ❌ @{username}: {e}")
-                            break
-
-                        except Exception as e:
-                            if "CHANNELS_ADMIN_PUBLIC_TOO_MUCH" in str(e):
-                                log.error("❌ Too many public channels on this account!")
-                            else:
-                                log.warning(f"  ❌ Unexpected: {e}")
-                            break
-
-                if username not in _done:
-                    log.warning(f"  @{username} — all attempts failed, back to watching ...")
-                    await asyncio.sleep(CHECK_INTERVAL)
+                interval = CHECK_INTERVAL
 
             else:
-                await asyncio.sleep(CHECK_INTERVAL)
+                interval = CHECK_INTERVAL
+
+            await asyncio.sleep(interval)
 
         except FloodWait as e:
             log.warning(f"⏳ FloodWait {e.value}s @{username}")
             await asyncio.sleep(e.value)
+            interval = CHECK_INTERVAL
 
         except Exception as e:
-            log.error(f"  Error @{username}: {e}")
-            await asyncio.sleep(2)
+            errors += 1
+            log.error(f"  Error #{errors} @{username}: {e}")
+            await asyncio.sleep(min(2 ** errors, 10))
 
 
 async def main():
-    client = Client(
-        name="sniper",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=SESSION_STRING
-    ) if SESSION_STRING else Client(
-        name="sniper_session",
-        api_id=API_ID,
-        api_hash=API_HASH
-    )
+    if SESSION_STRING:
+        client = Client(
+            name="sniper",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=SESSION_STRING
+        )
+        log.info("🔑 Using string session")
+    else:
+        client = Client(
+            name="sniper_session",
+            api_id=API_ID,
+            api_hash=API_HASH
+        )
+        log.info("🔑 Using local session file")
 
     async with client:
         me = await client.get_me()
