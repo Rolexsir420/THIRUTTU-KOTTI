@@ -22,7 +22,7 @@ API_HASH       = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGET_CHANNEL_MAP = {
-    "tamilasia": -1003921818911,
+    "ek_tho": -1003921818911,
     "tamil2050": -1004483704268,
 }
 
