@@ -26,17 +26,16 @@ TARGET_CHANNEL_MAP = {
     "tamil2050": -1004483704268,
 }
 
-CHECK_INTERVAL = 0.2    # normal polling (seconds)
-FAST_INTERVAL  = 0.05   # once username detected free
+CHECK_INTERVAL = 0.2    # normal polling
+FAST_INTERVAL  = 0.05   # when free detected
 NOTIFY_SELF    = True
 STAGGER_DELAY  = 0.15
 # ─────────────────────────────────────────────────────────────────────────────
 
 _claim_lock  = asyncio.Lock()
 _done        = set()
-
-# channel_id → chat.id, cached at startup
 _channel_cache: dict[int, int] = {}
+_last_claim_attempt: dict[str, float] = {}  # Track last claim attempt per username
 
 
 async def is_available(client: Client, username: str) -> bool:
@@ -50,11 +49,8 @@ async def is_available(client: Client, username: str) -> bool:
     except Exception as e:
         msg = str(e).lower()
         if any(k in msg for k in (
-            "username_not_occupied",
-            "not occupied",
-            "username invalid",
-            "not found",
-            "no match",
+            "username_not_occupied", "not occupied", "username invalid",
+            "not found", "no match",
         )):
             return True
         return False
@@ -74,12 +70,8 @@ async def cache_channels(client: Client):
 async def try_claim(client: Client, username: str) -> bool:
     channel_id = TARGET_CHANNEL_MAP.get(username)
 
-    if not channel_id:
-        log.error(f"❌ No channel mapped for @{username}")
-        return False
-
-    if channel_id not in _channel_cache:
-        log.error(f"❌ Channel {channel_id} not cached — skipping!")
+    if not channel_id or channel_id not in _channel_cache:
+        log.error(f"❌ No valid channel for @{username}")
         return False
 
     cached_id = _channel_cache[channel_id]
@@ -105,11 +97,12 @@ async def try_claim(client: Client, username: str) -> bool:
 
     except UsernameOccupied:
         ms = (time.time() - t) * 1000
-        log.warning(f"❌ @{username} race lost ({ms:.0f}ms) — taken by someone else")
+        log.warning(f"⏳ @{username} unavailable ({ms:.0f}ms) — cooldown active")
+        _last_claim_attempt[username] = time.time()
         return False
 
     except FloodWait as e:
-        log.warning(f"⏳ FloodWait {e.value}s on @{username} claim")
+        log.warning(f"⚠️  FloodWait {e.value}s — account rate limited")
         await asyncio.sleep(e.value)
         return False
 
@@ -118,15 +111,13 @@ async def try_claim(client: Client, username: str) -> bool:
         return False
 
     except Exception as e:
-        if "CHANNELS_ADMIN_PUBLIC_TOO_MUCH" in str(e):
-            log.error("❌ Too many public channels on this account!")
-        else:
-            log.warning(f"❌ @{username} unexpected error: {e}")
+        log.warning(f"❌ @{username} error: {e}")
         return False
 
 
 async def watch(client: Client, username: str, index: int):
     username = username.lstrip("@").lower()
+    _last_claim_attempt[username] = 0
 
     if index > 0:
         await asyncio.sleep(index * STAGGER_DELAY)
@@ -139,10 +130,10 @@ async def watch(client: Client, username: str, index: int):
             async with _claim_lock:
                 success = await try_claim(client, username)
             _done.add(username)
-            log.info(f"  @{username} {'secured 🏆' if success else 'lost'}.")
+            log.info(f"  @{username} {'secured 🏆' if success else 'cooling down'}.")
             return
     except FloodWait as e:
-        log.warning(f"FloodWait {e.value}s on startup @{username}")
+        log.warning(f"FloodWait {e.value}s on startup — sleeping ...")
         await asyncio.sleep(e.value)
     except Exception as e:
         log.warning(f"Startup error @{username}: {e}")
@@ -156,7 +147,7 @@ async def watch(client: Client, username: str, index: int):
 
     while True:
         if username in _done:
-            log.info(f"  @{username} done. Exiting.")
+            log.info(f"  @{username} done.")
             return
 
         if _claim_lock.locked():
@@ -173,7 +164,16 @@ async def watch(client: Client, username: str, index: int):
                 log.info(f"  @{username} — {check_no} checks ({check_no/elapsed:.1f}/s)")
 
             if available:
-                interval = FAST_INTERVAL
+                # ── SMART BACKOFF: Only attempt if enough time passed ──
+                last_attempt = _last_claim_attempt.get(username, 0)
+                time_since_attempt = time.time() - last_attempt
+                
+                if time_since_attempt < 30:
+                    # Last attempt was <30s ago, skip this one
+                    interval = FAST_INTERVAL
+                    await asyncio.sleep(interval)
+                    continue
+
                 log.info(f"🟢 @{username} FREE! Firing claim ...")
                 async with _claim_lock:
                     if username in _done:
@@ -193,7 +193,7 @@ async def watch(client: Client, username: str, index: int):
             await asyncio.sleep(interval)
 
         except FloodWait as e:
-            log.warning(f"⏳ FloodWait {e.value}s @{username}")
+            log.warning(f"⏳ FloodWait {e.value}s — pausing all watchers")
             await asyncio.sleep(e.value)
             interval = CHECK_INTERVAL
 
@@ -211,19 +211,20 @@ async def main():
             api_hash=API_HASH,
             session_string=SESSION_STRING
         )
-        log.info("🔑 Using string session")
+        log.info("🔑 String session")
     else:
         client = Client(
             name="sniper_session",
             api_id=API_ID,
             api_hash=API_HASH
         )
-        log.info("🔑 Using local session file")
+        log.info("🔑 Local session")
 
     async with client:
         me = await client.get_me()
         log.info(f"🤖 {me.first_name} (@{me.username or 'no username'})")
         log.info(f"⚡ Targets: {list(TARGET_CHANNEL_MAP.keys())}")
+        log.info(f"   Strategy: 30s backoff, single account, no spam")
 
         await cache_channels(client)
 
@@ -232,7 +233,7 @@ async def main():
             for i, username in enumerate(TARGET_CHANNEL_MAP.keys())
         ])
 
-        log.info("✅ All done.")
+        log.info("✅ Done.")
 
 
 if __name__ == "__main__":
