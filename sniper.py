@@ -22,7 +22,7 @@ API_HASH       = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 TARGET_CHANNEL_MAP = {
-    "tamil_b": -1004484123708,
+    "akiladevibe": -1004484123708,
 }
 
 CHECK_INTERVAL = 0.2    # normal polling
